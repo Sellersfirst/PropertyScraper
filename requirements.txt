@@ -1,0 +1,6 @@
+fastapi>=0.115
+uvicorn[standard]>=0.32
+httpx>=0.28
+beautifulsoup4>=4.12
+lxml>=5.3
+python-dotenv>=1.0

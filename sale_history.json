@@ -1,0 +1,209 @@
+{
+  "url": "https://www.redfin.com/IL/Chicago/233-E-Erie-St-60611/unit-1301/home/14097065",
+  "scrapedAt": "2026-06-16T13:17:25.561498+00:00",
+  "saleHistory": [
+    {
+      "date": "Jun 9, 2026",
+      "event": "Contingent (Contingent - No Showings)",
+      "price": null,
+      "pricePerSqft": null,
+      "source": "MRED as Distributed by MLS Grid #12667067"
+    },
+    {
+      "date": "Jun 3, 2026",
+      "event": "Listed (Active)",
+      "price": "$219,995",
+      "pricePerSqft": "$259/sq ft",
+      "source": "MRED as Distributed by MLS Grid #12667067"
+    },
+    {
+      "date": "Jun 3, 2026",
+      "event": "Listing Removed",
+      "price": null,
+      "pricePerSqft": null,
+      "source": "MRED as Distributed by MLS Grid #12606449"
+    },
+    {
+      "date": "May 13, 2026",
+      "event": "Listed (Active)",
+      "price": null,
+      "pricePerSqft": null,
+      "source": "MRED as Distributed by MLS Grid #12606449"
+    },
+    {
+      "date": "Apr 9, 2026",
+      "event": "Listing Removed",
+      "price": null,
+      "pricePerSqft": null,
+      "source": "MRED as Distributed by MLS Grid #12606449"
+    },
+    {
+      "date": "Sep 23, 2021",
+      "event": "Sold (MLS) (Closed)",
+      "price": "$156,000",
+      "pricePerSqft": "$184/sq ft",
+      "source": "MRED as Distributed by MLS Grid #11186873"
+    },
+    {
+      "date": "Aug 21, 2021",
+      "event": "Pending (Active Under Contract)",
+      "price": null,
+      "pricePerSqft": null,
+      "source": "MRED as Distributed by MLS Grid #11186873"
+    },
+    {
+      "date": "Aug 11, 2021",
+      "event": "Listed (Active)",
+      "price": "$175,000",
+      "pricePerSqft": "$206/sq ft",
+      "source": "MRED as Distributed by MLS Grid #11186873"
+    },
+    {
+      "date": "Aug 11, 2021",
+      "event": "Listing Removed",
+      "price": null,
+      "pricePerSqft": null,
+      "source": "MRED as Distributed by MLS Grid #11057082"
+    },
+    {
+      "date": "Jun 23, 2021",
+      "event": "Price Changed",
+      "price": null,
+      "pricePerSqft": null,
+      "source": "MRED as Distributed by MLS Grid #11057082"
+    },
+    {
+      "date": "Jun 12, 2021",
+      "event": "Price Changed",
+      "price": null,
+      "pricePerSqft": null,
+      "source": "MRED as Distributed by MLS Grid #11057082"
+    },
+    {
+      "date": "Jun 9, 2021",
+      "event": "Relisted (Reactivated)",
+      "price": null,
+      "pricePerSqft": null,
+      "source": "MRED as Distributed by MLS Grid #11057082"
+    },
+    {
+      "date": "Jun 4, 2021",
+      "event": "Pending (Contingent)",
+      "price": null,
+      "pricePerSqft": null,
+      "source": "MRED as Distributed by MLS Grid #11057082"
+    },
+    {
+      "date": "May 20, 2021",
+      "event": "Price Changed",
+      "price": null,
+      "pricePerSqft": null,
+      "source": "MRED as Distributed by MLS Grid #11057082"
+    },
+    {
+      "date": "Apr 30, 2021",
+      "event": "Price Changed",
+      "price": null,
+      "pricePerSqft": null,
+      "source": "MRED as Distributed by MLS Grid #11057082"
+    },
+    {
+      "date": "Apr 16, 2021",
+      "event": "Listed (New)",
+      "price": null,
+      "pricePerSqft": null,
+      "source": "MRED as Distributed by MLS Grid #11057082"
+    },
+    {
+      "date": "Mar 31, 2019",
+      "event": "Listing Removed",
+      "price": null,
+      "pricePerSqft": null,
+      "source": "MRED as Distributed by MLS Grid #10104787"
+    },
+    {
+      "date": "Oct 5, 2018",
+      "event": "Listed (New)",
+      "price": null,
+      "pricePerSqft": null,
+      "source": "MRED as Distributed by MLS Grid #10104787"
+    },
+    {
+      "date": "Dec 12, 2013",
+      "event": "Listing Removed",
+      "price": null,
+      "pricePerSqft": null,
+      "source": "MRED as Distributed by MLS Grid #08486507"
+    },
+    {
+      "date": "Nov 12, 2013",
+      "event": "Listed (New)",
+      "price": null,
+      "pricePerSqft": null,
+      "source": "MRED as Distributed by MLS Grid #08486507"
+    },
+    {
+      "date": "Aug 26, 2013",
+      "event": "Pending",
+      "price": null,
+      "pricePerSqft": null,
+      "source": "MRED as Distributed by MLS Grid #08401523"
+    },
+    {
+      "date": "Aug 26, 2013",
+      "event": "Price Changed (Reactivated)",
+      "price": "$175,500",
+      "pricePerSqft": "$206/sq ft",
+      "source": "MRED as Distributed by MLS Grid #08401523"
+    },
+    {
+      "date": "Aug 26, 2013",
+      "event": "Relisted (Reactivated)",
+      "price": null,
+      "pricePerSqft": null,
+      "source": "MRED as Distributed by MLS Grid #08401523"
+    },
+    {
+      "date": "Aug 26, 2013",
+      "event": "Sold (MLS) (Closed Sale)",
+      "price": "$175,500",
+      "pricePerSqft": "$206/sq ft",
+      "source": "MRED as Distributed by MLS Grid #08401523"
+    },
+    {
+      "date": "Aug 21, 2013",
+      "event": "Pending",
+      "price": null,
+      "pricePerSqft": null,
+      "source": "MRED as Distributed by MLS Grid #08401523"
+    },
+    {
+      "date": "Aug 7, 2013",
+      "event": "Contingent",
+      "price": null,
+      "pricePerSqft": null,
+      "source": "MRED as Distributed by MLS Grid #08401523"
+    },
+    {
+      "date": "Jul 23, 2013",
+      "event": "Listed (New)",
+      "price": "$195,000",
+      "pricePerSqft": "$229/sq ft",
+      "source": "MRED as Distributed by MLS Grid #08401523"
+    },
+    {
+      "date": "Jun 21, 2002",
+      "event": "Sold",
+      "price": "$160,000",
+      "pricePerSqft": "$188/sq ft",
+      "source": "Public Records"
+    },
+    {
+      "date": "Sep 20, 1983",
+      "event": "Sold",
+      "price": "$80,500",
+      "pricePerSqft": "$95/sq ft",
+      "source": "Public Records"
+    }
+  ]
+}
