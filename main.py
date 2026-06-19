@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 from models import (
     ComparableSalesRequest,
@@ -30,6 +31,16 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 app = FastAPI(title="Property Comparable Sales", version="3.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "https://property-finder-eight-tau.vercel.app",
+    ],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # ─── Sale gap helper ───────────────────────────────────────────────────────────
