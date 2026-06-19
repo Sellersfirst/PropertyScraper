@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
@@ -157,7 +157,41 @@ async def comparable_sales(req: ComparableSalesRequest):
             continue  # skip the target property itself
 
         if dist > req.radius_miles:
-            log.debug("Excluded %s — %.3f mi", c.get("address"), dist)
+            continue
+
+        # sqft
+        sq_ft = c.get("sq_ft")
+        if req.min_sqft and sq_ft is not None and sq_ft < req.min_sqft:
+            continue
+        if req.max_sqft and sq_ft is not None and sq_ft > req.max_sqft:
+            continue
+
+        # price
+        price = c.get("price")
+        if req.min_price and price is not None and price < req.min_price:
+            continue
+        if req.max_price and price is not None and price > req.max_price:
+            continue
+
+        # beds
+        beds = c.get("bedrooms")
+        if req.min_beds and beds is not None and beds < req.min_beds:
+            continue
+        if req.max_beds and beds is not None and beds > req.max_beds:
+            continue
+
+        # baths
+        baths = c.get("bathrooms")
+        if req.min_baths and baths is not None and baths < req.min_baths:
+            continue
+        if req.max_baths and baths is not None and baths > req.max_baths:
+            continue
+
+        # lot size
+        lot = c.get("lot_size_sqft")
+        if req.min_lot_sqft and lot is not None and lot < req.min_lot_sqft:
+            continue
+        if req.max_lot_sqft and lot is not None and lot > req.max_lot_sqft:
             continue
 
         filtered.append({**c, "distance_miles": round(dist, 3)})
@@ -184,12 +218,28 @@ async def comparable_sales(req: ComparableSalesRequest):
 
     history_results = await asyncio.gather(*(_fetch_history(p) for p in selected))
 
+    lookback_cutoff: Optional[datetime] = None
+    if req.lookback_years:
+        lookback_cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=req.lookback_years * 365.25)
+
     comparables: list[ComparableProperty] = []
     for prop, history in history_results:
         addr = prop.get("address") or ""
+
         if req.max_sale_gap_months and history:
             if not _check_sale_gap(history, req.max_sale_gap_months):
                 log.info("Excluded %r — sale gap > %.1f mo", addr, req.max_sale_gap_months)
+                continue
+
+        if lookback_cutoff and history:
+            sold_dates = [
+                _parse_event_date(ev.date)
+                for ev in history
+                if "sold" in ev.event.lower()
+            ]
+            sold_dates = [d for d in sold_dates if d]
+            if sold_dates and max(sold_dates) < lookback_cutoff:
+                log.info("Excluded %r — most recent sale outside lookback window", addr)
                 continue
 
         comparables.append(
