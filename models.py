@@ -69,8 +69,16 @@ class ComparableProperty(BaseModel):
     lot_size_sqft: Optional[float] = None
     bedrooms: Optional[float] = None
     bathrooms: Optional[float] = None
+    pool: Optional[bool] = None
+    garage: Optional[str] = None
     list_price: Optional[int] = None
     distance_miles: Optional[float] = None
+    sale_date: Optional[str] = None
+    sale_price: Optional[int] = None
+    buy_date: Optional[str] = None
+    buy_price: Optional[int] = None
+    hold_days: Optional[int] = None
+    spread: Optional[int] = None
     sale_history: list[SaleEvent] = []
 
 

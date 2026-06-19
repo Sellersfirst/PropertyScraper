@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -44,6 +45,51 @@ app.add_middleware(
 
 
 # ─── Sale gap helper ───────────────────────────────────────────────────────────
+
+def _parse_price_str(s: Optional[str]) -> Optional[int]:
+    if not s:
+        return None
+    m = re.search(r"[\d,]+", s.replace("$", ""))
+    return int(m.group().replace(",", "")) if m else None
+
+
+def _extract_sale_pair(history: list[SaleEvent]) -> dict:
+    """Derive sale_date, sale_price, buy_date, buy_price, hold_days, spread from history.
+
+    History is newest-first. For each 'Sold' event the best available price is
+    the nearest 'Listed' event that comes AFTER it in the list (i.e. the listing
+    that preceded the sale chronologically).
+    """
+    sold_indices = [i for i, ev in enumerate(history) if "sold" in ev.event.lower()]
+    if not sold_indices:
+        return {}
+
+    def _price_for_sold(sold_idx: int) -> Optional[int]:
+        for j in range(sold_idx + 1, len(history)):
+            if "listed" in history[j].event.lower():
+                return _parse_price_str(history[j].price)
+        return None
+
+    result: dict = {}
+    i_sale = sold_indices[0]
+    result["sale_date"] = history[i_sale].date
+    result["sale_price"] = _price_for_sold(i_sale)
+
+    if len(sold_indices) >= 2:
+        i_buy = sold_indices[1]
+        result["buy_date"] = history[i_buy].date
+        result["buy_price"] = _price_for_sold(i_buy)
+
+        sd = _parse_event_date(result["sale_date"])
+        bd = _parse_event_date(result["buy_date"])
+        if sd and bd:
+            result["hold_days"] = (sd - bd).days
+
+        if result.get("sale_price") and result.get("buy_price"):
+            result["spread"] = result["sale_price"] - result["buy_price"]
+
+    return result
+
 
 def _parse_event_date(s: str) -> Optional[datetime]:
     for fmt in ("%b %d, %Y", "%B %d, %Y", "%m/%d/%Y", "%Y-%m-%d"):
@@ -242,6 +288,7 @@ async def comparable_sales(req: ComparableSalesRequest):
                 log.info("Excluded %r — most recent sale outside lookback window", addr)
                 continue
 
+        sale_pair = _extract_sale_pair(history)
         comparables.append(
             ComparableProperty(
                 redfin_url=prop.get("full_url"),
@@ -250,8 +297,16 @@ async def comparable_sales(req: ComparableSalesRequest):
                 lot_size_sqft=prop.get("lot_size_sqft"),
                 bedrooms=prop.get("bedrooms"),
                 bathrooms=prop.get("bathrooms"),
+                pool=prop.get("pool"),
+                garage=prop.get("garage"),
                 list_price=prop.get("price"),
                 distance_miles=prop["distance_miles"],
+                sale_date=sale_pair.get("sale_date"),
+                sale_price=sale_pair.get("sale_price"),
+                buy_date=sale_pair.get("buy_date"),
+                buy_price=sale_pair.get("buy_price"),
+                hold_days=sale_pair.get("hold_days"),
+                spread=sale_pair.get("spread"),
                 sale_history=history,
             )
         )

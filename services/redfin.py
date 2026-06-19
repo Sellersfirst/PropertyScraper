@@ -237,13 +237,22 @@ def _parse_redfin_search_html(html: str, max_results: int = 100) -> list[dict]:
                     if bm:
                         baths = float(bm.group(1))
 
-                # Lot size: sometimes in .KeyFacts-item ("9,609 sq ft lot")
+                # KeyFacts-item: lot size, pool, garage
                 lot_sqft = None
+                pool = None
+                garage = None
                 for kf in card.select(".KeyFacts-item"):
-                    km = re.search(r"([\d,]+)\s*sq\s*ft\s*lot", kf.get_text(), re.I)
-                    if km:
-                        lot_sqft = float(km.group(1).replace(",", ""))
-                        break
+                    text = kf.get_text(strip=True)
+                    if lot_sqft is None:
+                        km = re.search(r"([\d,]+)\s*sq\s*ft\s*lot", text, re.I)
+                        if km:
+                            lot_sqft = float(km.group(1).replace(",", ""))
+                    if pool is None and re.search(r"\bpool\b", text, re.I):
+                        pool = True
+                    if garage is None:
+                        gm = re.search(r"(\d+-car\s+\w+)", text, re.I)
+                        if gm:
+                            garage = gm.group(1)
 
                 results.append({
                     "full_url": url,
@@ -252,6 +261,8 @@ def _parse_redfin_search_html(html: str, max_results: int = 100) -> list[dict]:
                     "lot_size_sqft": lot_sqft,
                     "bedrooms": beds,
                     "bathrooms": baths,
+                    "pool": pool,
+                    "garage": garage,
                     "price": price,
                     "lat": float(lat) if lat is not None else None,
                     "lng": float(lng) if lng is not None else None,
