@@ -5,8 +5,12 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+
+import database
 
 from models import (
     ComparableSalesRequest,
@@ -31,7 +35,13 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-app = FastAPI(title="Property Comparable Sales", version="3.0.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await database.init_db()
+    yield
+
+
+app = FastAPI(title="Property Comparable Sales", version="3.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -314,12 +324,41 @@ async def comparable_sales(req: ComparableSalesRequest):
     elapsed = time.monotonic() - t_start
     log.info("Done — %d comparable(s) in %.1fs", len(comparables), elapsed)
 
-    return ComparableSalesResponse(
+    response = ComparableSalesResponse(
         target=target,
         comparables=comparables,
         total_candidates_found=len(filtered),
         scraped_at=datetime.now(timezone.utc).isoformat(),
     )
+
+    try:
+        await database.save_search(req.model_dump(), response.model_dump())
+    except Exception as e:
+        log.warning("Failed to save search to DB: %s", e)
+
+    return response
+
+
+# ── Search history endpoints ───────────────────────────────────────────────────
+
+@app.get("/searches")
+async def list_searches(limit: int = 50, offset: int = 0):
+    return await database.list_searches(limit=limit, offset=offset)
+
+
+@app.get("/searches/{search_id}")
+async def get_search(search_id: int):
+    record = await database.get_search(search_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Search not found")
+    return record
+
+
+@app.delete("/searches/{search_id}", status_code=204)
+async def delete_search(search_id: int):
+    deleted = await database.delete_search(search_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Search not found")
 
 
 @app.get("/health")
