@@ -7,3 +7,4 @@ node_modules
 __pycache__/
 *.pyc
 searches.db
+.claude/
