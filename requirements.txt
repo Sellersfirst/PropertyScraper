@@ -4,3 +4,4 @@ httpx>=0.28
 beautifulsoup4>=4.12
 lxml>=5.3
 python-dotenv>=1.0
+aiosqlite
