@@ -21,6 +21,9 @@ SCRAPINGBEE_KEY = os.environ["SCRAPINGBEE_API_KEY"]
 REDFIN_BASE = "https://www.redfin.com"
 SCRAPINGBEE_URL = "https://app.scrapingbee.com/api/v1/"
 
+# Limit concurrent ScrapingBee calls to avoid rate-limit 500s from simultaneous requests
+_SB_SEMAPHORE = asyncio.Semaphore(3)
+
 def _strip_xssi(text: str) -> str:
     # Redfin prefixes JSON responses with `{}&&` as XSSI prevention.
     # Find `&&` and take everything after it; fall through if absent.
@@ -50,13 +53,15 @@ async def _scrapingbee(
 
     log.info("ScrapingBee → %s (render_js=%s)", url, render_js)
     t0 = time.monotonic()
-    async with httpx.AsyncClient(timeout=120) as client:
-        for attempt in range(1, 3):
-            resp = await client.get(SCRAPINGBEE_URL, params=params)
-            if resp.status_code < 500:
-                break
-            log.warning("ScrapingBee returned %s on attempt %d — retrying", resp.status_code, attempt)
-        resp.raise_for_status()
+    async with _SB_SEMAPHORE:
+        async with httpx.AsyncClient(timeout=120) as client:
+            for attempt in range(1, 3):
+                resp = await client.get(SCRAPINGBEE_URL, params=params)
+                if resp.status_code < 500:
+                    break
+                log.warning("ScrapingBee returned %s on attempt %d — retrying", resp.status_code, attempt)
+                await asyncio.sleep(2)
+            resp.raise_for_status()
     elapsed = time.monotonic() - t0
     credits = resp.headers.get("Spb-cost", "?")
     log.info("ScrapingBee ← %s in %.1fs | credits used: %s", resp.status_code, elapsed, credits)
