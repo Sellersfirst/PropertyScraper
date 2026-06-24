@@ -60,7 +60,6 @@ async def _scrapingbee(
                 if resp.status_code < 500:
                     break
                 log.warning("ScrapingBee returned %s on attempt %d — retrying", resp.status_code, attempt)
-                await asyncio.sleep(2)
             resp.raise_for_status()
     elapsed = time.monotonic() - t0
     credits = resp.headers.get("Spb-cost", "?")

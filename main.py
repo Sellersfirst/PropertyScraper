@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import re
 import time
@@ -269,12 +268,11 @@ async def comparable_sales(req: ComparableSalesRequest):
         if not page_filtered:
             continue
 
-        # Scrape histories for this page's filtered candidates in parallel
-        history_results = await asyncio.gather(*(_fetch_history(p) for p in page_filtered))
-
-        for prop, history in history_results:
+        # Scrape histories one at a time — sequential to avoid rate-limit 500s
+        for prop in page_filtered:
             if len(comparables) >= req.max_comparables:
                 break
+            _, history = await _fetch_history(prop)
             addr = prop.get("address") or ""
             if not _passes_history_filters(history, addr):
                 continue
