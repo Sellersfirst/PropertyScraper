@@ -342,58 +342,42 @@ def _parse_max_page(html: str) -> int:
     return max(page_nums) if page_nums else 1
 
 
-async def search_sold_by_zip(
-    *,
+async def iter_sold_pages(
     zipcode: str,
-    max_results: int = 100,
     sold_within: str = "sold-3yr",
-    **_kwargs,
-) -> list[dict]:
-    """Scrape Redfin sold listings for a ZIP code using the include=sold-Xyr filter.
+):
+    """Async generator that yields one page of Redfin sold listings at a time.
 
-    URL format: /zipcode/{ZIP}/filter/include=sold-Xyr
-    sold_within values: sold-1wk, sold-1mo, sold-3mo, sold-6mo,
-                        sold-1yr, sold-2yr, sold-3yr, sold-5yr
-    Paginates through all available pages (up to 10) until max_results is reached.
+    Yields (page_number, results, total_available_pages) so the caller can stop
+    pagination as soon as it has collected enough qualified results.
     """
     base = f"{REDFIN_BASE}/zipcode/{zipcode}/filter/include={sold_within}"
     seen_urls: set[str] = set()
-    all_results: list[dict] = []
-    max_pages = 10  # hard cap; actual page count read from page 1
+    max_pages = 10
 
-    # Fetch page 1 to get results AND the real page count
     html = await _fetch_redfin_page(base)
     available_pages = min(_parse_max_page(html), max_pages)
     log.info("Redfin sold search — %d page(s) available for %s %s", available_pages, zipcode, sold_within)
 
-    page_results = _parse_redfin_search_html(html, max_results=max_results)
+    page_results = _parse_redfin_search_html(html)
     new = [r for r in page_results if r["full_url"] not in seen_urls]
     for r in new:
         seen_urls.add(r["full_url"])
-    all_results.extend(new)
-    log.info("Page 1: %d new properties (total: %d)", len(new), len(all_results))
+    log.info("Page 1: %d new properties", len(new))
+    yield 1, new, available_pages
 
     for page in range(2, available_pages + 1):
-        if len(all_results) >= max_results:
-            break
         url = f"{base}/page-{page}"
         log.info("Redfin sold search page %d → %s", page, url)
-
         html = await _fetch_redfin_page(url)
-        page_results = _parse_redfin_search_html(html, max_results=max_results)
-
+        page_results = _parse_redfin_search_html(html)
         new = [r for r in page_results if r["full_url"] not in seen_urls]
         for r in new:
             seen_urls.add(r["full_url"])
-        all_results.extend(new)
-
-        log.info("Page %d: %d new properties (total: %d)", page, len(new), len(all_results))
-
+        log.info("Page %d: %d new properties", page, len(new))
         if not new:
             break
-
-    log.info("Redfin search complete: %d properties across up to %d page(s)", len(all_results), available_pages)
-    return all_results
+        yield page, new, available_pages
 
 
 # ─── ZIP extraction helper ────────────────────────────────────────────────────

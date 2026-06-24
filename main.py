@@ -23,9 +23,9 @@ from services.geo import haversine_miles
 from services.redfin import (
     extract_zip,
     geocode_nominatim,
+    iter_sold_pages,
     scrape_property_details,
     scrape_sale_history,
-    search_sold_by_zip,
 )
 
 logging.basicConfig(
@@ -172,91 +172,20 @@ async def comparable_sales(req: ComparableSalesRequest):
             detail="Could not determine ZIP code for this property.",
         )
 
-    # ── 2. Scrape Redfin sold listings for this ZIP ──────────────────────────
-    log.info("Step 2 — scraping Redfin sold listings in ZIP %s via ScrapingBee", zip_code)
-    candidates = await search_sold_by_zip(
-        zipcode=zip_code,
-        sold_within=req.sold_within,
-        max_results=min(req.max_comparables * 10, 100),
-    )
-    log.info("Step 2 done — %d candidate(s) from Redfin search", len(candidates))
-
-    # ── 3. Post-filter: distance + geocode missing lat/lng ───────────────────
-    log.info("Step 3 — distance-filtering %d candidates (radius=%.1f mi)", len(candidates), req.radius_miles)
-    filtered: list[dict] = []
-    for c in candidates:
-        c_lat = c.get("lat")
-        c_lng = c.get("lng")
-
-        # If lat/lng not in page JSON, geocode via Nominatim (1 req/sec rate limit)
-        if (c_lat is None or c_lng is None) and c.get("address"):
-            try:
-                await asyncio.sleep(1.1)
-                c_lat, c_lng, _, _ = await geocode_nominatim(c["address"])
-                c["lat"], c["lng"] = c_lat, c_lng
-            except Exception as e:
-                log.warning("Could not geocode %r: %s", c.get("address"), e)
-                continue
-
-        if c_lat is None or c_lng is None:
-            continue
-
-        dist = haversine_miles(target.lat, target.lng, c_lat, c_lng)
-        if dist < 0.001:
-            continue  # skip the target property itself
-
-        if dist > req.radius_miles:
-            continue
-
-        # sqft
-        sq_ft = c.get("sq_ft")
-        if req.min_sqft and sq_ft is not None and sq_ft < req.min_sqft:
-            continue
-        if req.max_sqft and sq_ft is not None and sq_ft > req.max_sqft:
-            continue
-
-        # price
-        price = c.get("price")
-        if req.min_price and price is not None and price < req.min_price:
-            continue
-        if req.max_price and price is not None and price > req.max_price:
-            continue
-
-        # beds
-        beds = c.get("bedrooms")
-        if req.min_beds and beds is not None and beds < req.min_beds:
-            continue
-        if req.max_beds and beds is not None and beds > req.max_beds:
-            continue
-
-        # baths
-        baths = c.get("bathrooms")
-        if req.min_baths and baths is not None and baths < req.min_baths:
-            continue
-        if req.max_baths and baths is not None and baths > req.max_baths:
-            continue
-
-        # lot size
-        lot = c.get("lot_size_sqft")
-        if req.min_lot_sqft and lot is not None and lot < req.min_lot_sqft:
-            continue
-        if req.max_lot_sqft and lot is not None and lot > req.max_lot_sqft:
-            continue
-
-        filtered.append({**c, "distance_miles": round(dist, 3)})
-
-    filtered.sort(key=lambda x: x["distance_miles"])
-    # Scrape history for enough candidates to fill max_comparables after history
-    # filters. Use a 3× buffer (min 30) so history-based filters don't leave the
-    # result set short.
-    history_pool = filtered[: max(req.max_comparables * 3, 30)]
+    # ── 2–4. Page-by-page: fetch → filter → scrape history → qualify ────────
+    # Pagination stops as soon as we have max_comparables qualified results,
+    # so we never fetch more pages than needed.
     log.info(
-        "Step 3 done — %d within radius, scraping history for top %d by distance",
-        len(filtered), len(history_pool),
+        "Starting page-by-page search in ZIP %s (sold_within=%s, radius=%.1f mi)",
+        zip_code, req.sold_within, req.radius_miles,
     )
 
-    # ── 4. Scrape sale history in parallel ───────────────────────────────────
-    log.info("Step 4 — scraping sale history for %d candidate(s) in parallel", len(history_pool))
+    lookback_cutoff: Optional[datetime] = None
+    if req.lookback_years:
+        lookback_cutoff = (
+            datetime.now(timezone.utc).replace(tzinfo=None)
+            - timedelta(days=req.lookback_years * 365.25)
+        )
 
     async def _fetch_history(prop: dict) -> tuple[dict, list[SaleEvent]]:
         comp_url = prop.get("full_url")
@@ -268,67 +197,121 @@ async def comparable_sales(req: ComparableSalesRequest):
             log.warning("History scrape failed for %s: %s", comp_url, e)
             return prop, []
 
-    history_results = await asyncio.gather(*(_fetch_history(p) for p in history_pool))
+    def _passes_basic_filters(c: dict) -> tuple[bool, float]:
+        """Check radius + attribute filters. Returns (passes, distance_miles)."""
+        c_lat, c_lng = c.get("lat"), c.get("lng")
+        if c_lat is None or c_lng is None:
+            return False, 0.0
+        dist = haversine_miles(target.lat, target.lng, c_lat, c_lng)
+        if dist < 0.001 or dist > req.radius_miles:
+            return False, dist
+        sq_ft = c.get("sq_ft")
+        if req.min_sqft and sq_ft is not None and sq_ft < req.min_sqft:
+            return False, dist
+        if req.max_sqft and sq_ft is not None and sq_ft > req.max_sqft:
+            return False, dist
+        price = c.get("price")
+        if req.min_price and price is not None and price < req.min_price:
+            return False, dist
+        if req.max_price and price is not None and price > req.max_price:
+            return False, dist
+        beds = c.get("bedrooms")
+        if req.min_beds and beds is not None and beds < req.min_beds:
+            return False, dist
+        if req.max_beds and beds is not None and beds > req.max_beds:
+            return False, dist
+        baths = c.get("bathrooms")
+        if req.min_baths and baths is not None and baths < req.min_baths:
+            return False, dist
+        if req.max_baths and baths is not None and baths > req.max_baths:
+            return False, dist
+        lot = c.get("lot_size_sqft")
+        if req.min_lot_sqft and lot is not None and lot < req.min_lot_sqft:
+            return False, dist
+        if req.max_lot_sqft and lot is not None and lot > req.max_lot_sqft:
+            return False, dist
+        return True, dist
 
-    lookback_cutoff: Optional[datetime] = None
-    if req.lookback_years:
-        lookback_cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=req.lookback_years * 365.25)
-
-    comparables: list[ComparableProperty] = []
-    for prop, history in history_results:
-        addr = prop.get("address") or ""
-
+    def _passes_history_filters(history: list[SaleEvent], addr: str) -> bool:
         if req.max_sale_gap_months and history:
             if not _check_sale_gap(history, req.max_sale_gap_months):
                 log.info("Excluded %r — sale gap > %.1f mo", addr, req.max_sale_gap_months)
-                continue
-
+                return False
         if lookback_cutoff and history:
-            # history is newest-first; sold_dates[0] = resell, sold_dates[1] = buy
             sold_dates = [
                 _parse_event_date(ev.date)
-                for ev in history
-                if "sold" in ev.event.lower()
+                for ev in history if "sold" in ev.event.lower()
             ]
             sold_dates = [d for d in sold_dates if d]
-            # Require the property was sold TWICE within the window — both buy and
-            # resell must fall inside the lookback period, not just the most recent sale.
             if len(sold_dates) < 2 or sold_dates[1] < lookback_cutoff:
                 log.info("Excluded %r — buy+resell pair not within lookback window", addr)
-                continue
+                return False
+        return True
 
-        sale_pair = _extract_sale_pair(history)
-        comparables.append(
-            ComparableProperty(
-                redfin_url=prop.get("full_url"),
-                address=addr or None,
-                sq_ft=prop.get("sq_ft"),
-                lot_size_sqft=prop.get("lot_size_sqft"),
-                bedrooms=prop.get("bedrooms"),
-                bathrooms=prop.get("bathrooms"),
-                pool=prop.get("pool"),
-                garage=prop.get("garage"),
-                list_price=prop.get("price"),
-                distance_miles=prop["distance_miles"],
-                sale_date=sale_pair.get("sale_date"),
-                sale_price=sale_pair.get("sale_price"),
-                buy_date=sale_pair.get("buy_date"),
-                buy_price=sale_pair.get("buy_price"),
-                hold_days=sale_pair.get("hold_days"),
-                spread=sale_pair.get("spread"),
-                sale_history=history,
-            )
+    comparables: list[ComparableProperty] = []
+    total_candidates_seen: int = 0
+
+    async for page_num, page_candidates, available_pages in iter_sold_pages(zip_code, req.sold_within):
+        total_candidates_seen += len(page_candidates)
+
+        # Basic filter (no history needed)
+        page_filtered = []
+        for c in page_candidates:
+            passes, dist = _passes_basic_filters(c)
+            if passes:
+                page_filtered.append({**c, "distance_miles": round(dist, 3)})
+
+        log.info(
+            "Page %d/%d — %d candidates, %d pass basic filters, %d qualified so far",
+            page_num, available_pages, len(page_candidates), len(page_filtered), len(comparables),
         )
 
-    comparables = comparables[: req.max_comparables]
+        if not page_filtered:
+            continue
+
+        # Scrape histories for this page's filtered candidates in parallel
+        history_results = await asyncio.gather(*(_fetch_history(p) for p in page_filtered))
+
+        for prop, history in history_results:
+            if len(comparables) >= req.max_comparables:
+                break
+            addr = prop.get("address") or ""
+            if not _passes_history_filters(history, addr):
+                continue
+            sale_pair = _extract_sale_pair(history)
+            comparables.append(
+                ComparableProperty(
+                    redfin_url=prop.get("full_url"),
+                    address=addr or None,
+                    sq_ft=prop.get("sq_ft"),
+                    lot_size_sqft=prop.get("lot_size_sqft"),
+                    bedrooms=prop.get("bedrooms"),
+                    bathrooms=prop.get("bathrooms"),
+                    pool=prop.get("pool"),
+                    garage=prop.get("garage"),
+                    list_price=prop.get("price"),
+                    distance_miles=prop["distance_miles"],
+                    sale_date=sale_pair.get("sale_date"),
+                    sale_price=sale_pair.get("sale_price"),
+                    buy_date=sale_pair.get("buy_date"),
+                    buy_price=sale_pair.get("buy_price"),
+                    hold_days=sale_pair.get("hold_days"),
+                    spread=sale_pair.get("spread"),
+                    sale_history=history,
+                )
+            )
+
+        if len(comparables) >= req.max_comparables:
+            log.info("Reached max_comparables=%d — stopping pagination", req.max_comparables)
+            break
 
     elapsed = time.monotonic() - t_start
-    log.info("Done — %d comparable(s) in %.1fs", len(comparables), elapsed)
+    log.info("Done — %d comparable(s) from %d candidates in %.1fs", len(comparables), total_candidates_seen, elapsed)
 
     response = ComparableSalesResponse(
         target=target,
         comparables=comparables,
-        total_candidates_found=len(filtered),
+        total_candidates_found=total_candidates_seen,
         scraped_at=datetime.now(timezone.utc).isoformat(),
     )
 
