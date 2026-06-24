@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 import time
@@ -8,6 +9,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 import database
 
@@ -45,7 +47,7 @@ app = FastAPI(title="Property Comparable Sales", version="3.0.0", lifespan=lifes
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",
+        "http://localhost:5174",
         "https://property-finder-eight-tau.vercel.app",
     ],
     allow_methods=["*"],
@@ -53,7 +55,7 @@ app.add_middleware(
 )
 
 
-# ─── Sale gap helper ───────────────────────────────────────────────────────────
+# ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def _parse_price_str(s: Optional[str]) -> Optional[int]:
     if not s:
@@ -63,12 +65,6 @@ def _parse_price_str(s: Optional[str]) -> Optional[int]:
 
 
 def _extract_sale_pair(history: list[SaleEvent]) -> dict:
-    """Derive sale_date, sale_price, buy_date, buy_price, hold_days, spread from history.
-
-    History is newest-first. For each 'Sold' event the best available price is
-    the nearest 'Listed' event that comes AFTER it in the list (i.e. the listing
-    that preceded the sale chronologically).
-    """
     sold_indices = [i for i, ev in enumerate(history) if "sold" in ev.event.lower()]
     if not sold_indices:
         return {}
@@ -110,7 +106,6 @@ def _parse_event_date(s: str) -> Optional[datetime]:
 
 
 def _check_sale_gap(history: list[SaleEvent], max_months: float) -> bool:
-    """True if the most-recent buy→sell cycle is within max_months (or gap can't be determined)."""
     sold_dates = sorted(
         filter(None, (_parse_event_date(ev.date) for ev in history if "sold" in ev.event.lower())),
         reverse=True,
@@ -118,67 +113,60 @@ def _check_sale_gap(history: list[SaleEvent], max_months: float) -> bool:
     if len(sold_dates) < 2:
         return True
     gap_months = (sold_dates[0] - sold_dates[1]).days / 30.44
-    log.debug("Sale gap: %.1f months (limit: %.1f)", gap_months, max_months)
     return gap_months <= max_months
 
 
-# ─── Endpoint ─────────────────────────────────────────────────────────────────
+# ─── Core search generator ────────────────────────────────────────────────────
+#
+# Yields progress event dicts throughout, then a final {"type": "complete", "data": ...}.
+# Both endpoints consume this — the SSE endpoint forwards every event,
+# the JSON endpoint collects only the "complete" one.
+#
+# Event types:
+#   resolving   — address lookup started
+#   resolved    — zip/lat/lng known
+#   page        — one Redfin results page processed
+#   scraping    — history fetch started for one property
+#   qualified   — property passed all filters, added to comparables
+#   skipped     — property failed a history filter
+#   complete    — all done, full response in "data"
+#   error       — fatal error, "message" has detail
 
-@app.post("/comparable-sales", response_model=ComparableSalesResponse)
-async def comparable_sales(req: ComparableSalesRequest):
+async def _search_stream(req: ComparableSalesRequest):
     t_start = time.monotonic()
-    log.info(
-        "Request — address=%r, redfin_url=%r, radius=%.1f mi, max=%d",
-        req.address, req.redfin_url, req.radius_miles, req.max_comparables,
-    )
-    log.info(
-        "Filters — sqft=%s–%s, lot=%s–%s, price=%s–%s, beds=%s–%s, baths=%s–%s, "
-        "lookback=%s yr, sale_gap=%s mo",
-        req.min_sqft, req.max_sqft,
-        req.min_lot_sqft, req.max_lot_sqft,
-        req.min_price, req.max_price,
-        req.min_beds, req.max_beds,
-        req.min_baths, req.max_baths,
-        req.lookback_years, req.max_sale_gap_months,
-    )
 
-    # ── 1. Resolve target property (lat/lng + ZIP) ───────────────────────────
+    # ── 1. Resolve address ───────────────────────────────────────────────────
+    yield {"type": "resolving", "message": "Resolving address…"}
+
     zip_code: Optional[str] = None
-
-    if req.redfin_url:
-        log.info("Step 1 — scraping target details from Redfin URL")
-        target = await scrape_property_details(req.redfin_url)
-        if target.lat is None or target.lng is None:
-            raise HTTPException(status_code=422, detail="Could not determine lat/lng.")
-        # ZIP from Redfin URL or scraped address
-        zip_code = extract_zip(req.redfin_url) or extract_zip(target.address or "")
-        log.info(
-            "Step 1 done — %r | sq_ft=%s | zip=%s | (%.6f, %.6f)",
-            target.address, target.sq_ft, zip_code, target.lat, target.lng,
-        )
-    else:
-        log.info("Step 1 — geocoding address via Nominatim")
-        try:
+    target: Optional[PropertySummary] = None
+    try:
+        if req.redfin_url:
+            target = await scrape_property_details(req.redfin_url)
+            if target.lat is None or target.lng is None:
+                yield {"type": "error", "message": "Could not determine lat/lng from Redfin URL."}
+                return
+            zip_code = extract_zip(req.redfin_url) or extract_zip(target.address or "")
+        else:
             lat, lng, display_name, zip_code = await geocode_nominatim(req.address)
-        except Exception as e:
-            raise HTTPException(status_code=404, detail=str(e))
-        target = PropertySummary(address=display_name, lat=lat, lng=lng)
-        log.info("Step 1 done — %r | zip=%s | (%.6f, %.6f)", display_name, zip_code, lat, lng)
+            target = PropertySummary(address=display_name, lat=lat, lng=lng)
+    except Exception as e:
+        yield {"type": "error", "message": str(e)}
+        return
 
     if not zip_code:
-        raise HTTPException(
-            status_code=422,
-            detail="Could not determine ZIP code for this property.",
-        )
+        yield {"type": "error", "message": "Could not determine ZIP code for this property."}
+        return
 
-    # ── 2–4. Page-by-page: fetch → filter → scrape history → qualify ────────
-    # Pagination stops as soon as we have max_comparables qualified results,
-    # so we never fetch more pages than needed.
-    log.info(
-        "Starting page-by-page search in ZIP %s (sold_within=%s, radius=%.1f mi)",
-        zip_code, req.sold_within, req.radius_miles,
-    )
+    yield {
+        "type": "resolved",
+        "zip": zip_code,
+        "address": target.address,
+        "lat": target.lat,
+        "lng": target.lng,
+    }
 
+    # ── helpers (close over req / target / lookback_cutoff) ─────────────────
     lookback_cutoff: Optional[datetime] = None
     if req.lookback_years:
         lookback_cutoff = (
@@ -197,7 +185,6 @@ async def comparable_sales(req: ComparableSalesRequest):
             return prop, []
 
     def _passes_basic_filters(c: dict) -> tuple[bool, float]:
-        """Check radius + attribute filters. Returns (passes, distance_miles)."""
         c_lat, c_lng = c.get("lat"), c.get("lng")
         if c_lat is None or c_lng is None:
             return False, 0.0
@@ -231,11 +218,11 @@ async def comparable_sales(req: ComparableSalesRequest):
             return False, dist
         return True, dist
 
-    def _passes_history_filters(history: list[SaleEvent], addr: str) -> bool:
+    def _passes_history_filters(history: list[SaleEvent], addr: str) -> tuple[bool, str]:
+        """Returns (passes, reason_if_failed)."""
         if req.max_sale_gap_months and history:
             if not _check_sale_gap(history, req.max_sale_gap_months):
-                log.info("Excluded %r — sale gap > %.1f mo", addr, req.max_sale_gap_months)
-                return False
+                return False, f"sale gap > {req.max_sale_gap_months:.0f} mo"
         if lookback_cutoff and history:
             sold_dates = [
                 _parse_event_date(ev.date)
@@ -243,39 +230,55 @@ async def comparable_sales(req: ComparableSalesRequest):
             ]
             sold_dates = [d for d in sold_dates if d]
             if len(sold_dates) < 2 or sold_dates[1] < lookback_cutoff:
-                log.info("Excluded %r — buy+resell pair not within lookback window", addr)
-                return False
-        return True
+                return False, "buy+resell pair not within lookback window"
+        return True, ""
 
+    # ── 2–4. Page-by-page loop ───────────────────────────────────────────────
     comparables: list[ComparableProperty] = []
     total_candidates_seen: int = 0
 
     async for page_num, page_candidates, available_pages in iter_sold_pages(zip_code, req.sold_within):
         total_candidates_seen += len(page_candidates)
 
-        # Basic filter (no history needed)
         page_filtered = []
         for c in page_candidates:
             passes, dist = _passes_basic_filters(c)
             if passes:
                 page_filtered.append({**c, "distance_miles": round(dist, 3)})
 
-        log.info(
-            "Page %d/%d — %d candidates, %d pass basic filters, %d qualified so far",
-            page_num, available_pages, len(page_candidates), len(page_filtered), len(comparables),
-        )
+        yield {
+            "type": "page",
+            "page": page_num,
+            "total_pages": available_pages,
+            "candidates": len(page_candidates),
+            "passed_filters": len(page_filtered),
+            "qualified_so_far": len(comparables),
+        }
 
-        if not page_filtered:
-            continue
-
-        # Scrape histories one at a time — sequential to avoid rate-limit 500s
-        for prop in page_filtered:
+        for i, prop in enumerate(page_filtered):
             if len(comparables) >= req.max_comparables:
                 break
-            _, history = await _fetch_history(prop)
+
             addr = prop.get("address") or ""
-            if not _passes_history_filters(history, addr):
+            yield {
+                "type": "scraping",
+                "address": addr,
+                "index": i + 1,
+                "total": len(page_filtered),
+            }
+
+            _, history = await _fetch_history(prop)
+            passes, reason = _passes_history_filters(history, addr)
+
+            if not passes:
+                yield {
+                    "type": "skipped",
+                    "address": addr,
+                    "reason": reason,
+                    "qualified_count": len(comparables),
+                }
                 continue
+
             sale_pair = _extract_sale_pair(history)
             comparables.append(
                 ComparableProperty(
@@ -298,9 +301,14 @@ async def comparable_sales(req: ComparableSalesRequest):
                     sale_history=history,
                 )
             )
+            yield {
+                "type": "qualified",
+                "address": addr,
+                "qualified_count": len(comparables),
+                "max": req.max_comparables,
+            }
 
         if len(comparables) >= req.max_comparables:
-            log.info("Reached max_comparables=%d — stopping pagination", req.max_comparables)
             break
 
     elapsed = time.monotonic() - t_start
@@ -318,7 +326,44 @@ async def comparable_sales(req: ComparableSalesRequest):
     except Exception as e:
         log.warning("Failed to save search to DB: %s", e)
 
-    return response
+    yield {
+        "type": "complete",
+        "elapsed_seconds": round(elapsed, 1),
+        "data": response.model_dump(),
+    }
+
+
+# ─── Endpoints ────────────────────────────────────────────────────────────────
+
+@app.post("/comparable-sales/stream")
+async def comparable_sales_stream(req: ComparableSalesRequest):
+    """SSE endpoint — streams progress events then the full result."""
+    async def event_stream():
+        try:
+            async for event in _search_stream(req):
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # disable nginx buffering on Railway
+        },
+    )
+
+
+@app.post("/comparable-sales", response_model=ComparableSalesResponse)
+async def comparable_sales(req: ComparableSalesRequest):
+    """JSON endpoint — runs the same search, returns only the final result."""
+    async for event in _search_stream(req):
+        if event["type"] == "complete":
+            return event["data"]
+        if event["type"] == "error":
+            raise HTTPException(status_code=422, detail=event["message"])
+    raise HTTPException(status_code=500, detail="Search did not complete")
 
 
 # ── Search history endpoints ───────────────────────────────────────────────────
