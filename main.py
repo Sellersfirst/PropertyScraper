@@ -246,14 +246,17 @@ async def comparable_sales(req: ComparableSalesRequest):
         filtered.append({**c, "distance_miles": round(dist, 3)})
 
     filtered.sort(key=lambda x: x["distance_miles"])
-    selected = filtered[: req.max_comparables]
+    # Scrape history for enough candidates to fill max_comparables after history
+    # filters. Use a 3× buffer (min 30) so history-based filters don't leave the
+    # result set short.
+    history_pool = filtered[: max(req.max_comparables * 3, 30)]
     log.info(
-        "Step 3 done — %d within radius, selecting top %d by distance",
-        len(filtered), len(selected),
+        "Step 3 done — %d within radius, scraping history for top %d by distance",
+        len(filtered), len(history_pool),
     )
 
-    # ── 4. Scrape sale history in parallel + apply sale gap filter ───────────
-    log.info("Step 4 — scraping sale history for %d comparable(s) in parallel", len(selected))
+    # ── 4. Scrape sale history in parallel ───────────────────────────────────
+    log.info("Step 4 — scraping sale history for %d candidate(s) in parallel", len(history_pool))
 
     async def _fetch_history(prop: dict) -> tuple[dict, list[SaleEvent]]:
         comp_url = prop.get("full_url")
@@ -265,7 +268,7 @@ async def comparable_sales(req: ComparableSalesRequest):
             log.warning("History scrape failed for %s: %s", comp_url, e)
             return prop, []
 
-    history_results = await asyncio.gather(*(_fetch_history(p) for p in selected))
+    history_results = await asyncio.gather(*(_fetch_history(p) for p in history_pool))
 
     lookback_cutoff: Optional[datetime] = None
     if req.lookback_years:
@@ -316,6 +319,8 @@ async def comparable_sales(req: ComparableSalesRequest):
                 sale_history=history,
             )
         )
+
+    comparables = comparables[: req.max_comparables]
 
     elapsed = time.monotonic() - t_start
     log.info("Done — %d comparable(s) in %.1fs", len(comparables), elapsed)
