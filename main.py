@@ -176,14 +176,7 @@ async def comparable_sales(req: ComparableSalesRequest):
     log.info("Step 2 — scraping Redfin sold listings in ZIP %s via ScrapingBee", zip_code)
     candidates = await search_sold_by_zip(
         zipcode=zip_code,
-        min_sqft=req.min_sqft,
-        max_sqft=req.max_sqft,
-        min_price=req.min_price,
-        max_price=req.max_price,
-        min_beds=req.min_beds,
-        max_beds=req.max_beds,
-        min_baths=req.min_baths,
-        lookback_years=req.lookback_years,
+        sold_within=req.sold_within,
         max_results=min(req.max_comparables * 10, 100),
     )
     log.info("Step 2 done — %d candidate(s) from Redfin search", len(candidates))
@@ -288,14 +281,17 @@ async def comparable_sales(req: ComparableSalesRequest):
                 continue
 
         if lookback_cutoff and history:
+            # history is newest-first; sold_dates[0] = resell, sold_dates[1] = buy
             sold_dates = [
                 _parse_event_date(ev.date)
                 for ev in history
                 if "sold" in ev.event.lower()
             ]
             sold_dates = [d for d in sold_dates if d]
-            if sold_dates and max(sold_dates) < lookback_cutoff:
-                log.info("Excluded %r — most recent sale outside lookback window", addr)
+            # Require the property was sold TWICE within the window — both buy and
+            # resell must fall inside the lookback period, not just the most recent sale.
+            if len(sold_dates) < 2 or sold_dates[1] < lookback_cutoff:
+                log.info("Excluded %r — buy+resell pair not within lookback window", addr)
                 continue
 
         sale_pair = _extract_sale_pair(history)

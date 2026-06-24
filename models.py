@@ -1,5 +1,10 @@
-from typing import Optional
+from typing import Literal, Optional
 from pydantic import BaseModel, model_validator
+
+SoldWithin = Literal[
+    "sold-1wk", "sold-1mo", "sold-3mo", "sold-6mo",
+    "sold-1yr", "sold-2yr", "sold-3yr", "sold-5yr",
+]
 
 
 class ComparableSalesRequest(BaseModel):
@@ -8,6 +13,9 @@ class ComparableSalesRequest(BaseModel):
 
     # Geographic
     radius_miles: float = 2.0
+
+    # Sold-listing time window — maps directly to Redfin's URL filter
+    sold_within: SoldWithin = "sold-3yr"
 
     # Home living area (sq ft)
     min_sqft: Optional[int] = None
@@ -21,7 +29,7 @@ class ComparableSalesRequest(BaseModel):
     min_price: Optional[int] = None
     max_price: Optional[int] = None
 
-    # How many years back to include sold listings
+    # Post-filter: exclude comps whose most recent sale is older than N years
     lookback_years: Optional[float] = None
 
     # Maximum months between a buy event and the following sell event (flip detection)

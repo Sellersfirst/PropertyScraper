@@ -51,7 +51,11 @@ async def _scrapingbee(
     log.info("ScrapingBee → %s (render_js=%s)", url, render_js)
     t0 = time.monotonic()
     async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.get(SCRAPINGBEE_URL, params=params)
+        for attempt in range(1, 3):
+            resp = await client.get(SCRAPINGBEE_URL, params=params)
+            if resp.status_code < 500:
+                break
+            log.warning("ScrapingBee returned %s on attempt %d — retrying", resp.status_code, attempt)
         resp.raise_for_status()
     elapsed = time.monotonic() - t0
     credits = resp.headers.get("Spb-cost", "?")
@@ -312,30 +316,84 @@ def _parse_redfin_search_html(html: str, max_results: int = 100) -> list[dict]:
     return results
 
 
+async def _fetch_redfin_page(url: str) -> str:
+    """Fetch one Redfin search page via ScrapingBee, plain HTTP first then JS fallback."""
+    html = await _scrapingbee(url, render_js=False, stealth_proxy=False)
+    if '<script type="application/ld+json">' not in html:
+        log.warning("No JSON-LD in plain response for %s — retrying with render_js=True", url)
+        html = await _scrapingbee(
+            url,
+            render_js=True,
+            stealth_proxy=True,
+            wait_for=".HomeCardContainer, [data-rf-test-id='mapHomeCard'], .V8ListingCard",
+            extra_wait_ms=3000,
+        )
+    return html
+
+
+def _parse_max_page(html: str) -> int:
+    """Extract the highest page number from the Redfin pagination widget."""
+    soup = BeautifulSoup(html, "lxml")
+    page_nums = [
+        int(a.get_text(strip=True))
+        for a in soup.select("a.PageNumbers__page")
+        if a.get_text(strip=True).isdigit()
+    ]
+    return max(page_nums) if page_nums else 1
+
+
 async def search_sold_by_zip(
     *,
     zipcode: str,
     max_results: int = 100,
+    sold_within: str = "sold-3yr",
     **_kwargs,
 ) -> list[dict]:
-    """Scrape Redfin recently-sold listings for a ZIP code via ScrapingBee."""
-    url = f"{REDFIN_BASE}/zipcode/{zipcode}/recently-sold"
-    log.info("Redfin recently-sold search → %s", url)
+    """Scrape Redfin sold listings for a ZIP code using the include=sold-Xyr filter.
 
-    # JSON-LD is server-side rendered on Redfin, so plain HTTP suffices.
-    # Fall back to JS rendering if we get zero cards.
-    html = await _scrapingbee(url, render_js=False, stealth_proxy=False)
-    if "<script type=\"application/ld+json\">" not in html:
-        log.warning("No JSON-LD in plain response — retrying with render_js=True")
-        html = await _scrapingbee(
-            url,
-            wait_for=".HomeCardContainer, [data-rf-test-id='mapHomeCard'], .V8ListingCard",
-            extra_wait_ms=3000,
-        )
+    URL format: /zipcode/{ZIP}/filter/include=sold-Xyr
+    sold_within values: sold-1wk, sold-1mo, sold-3mo, sold-6mo,
+                        sold-1yr, sold-2yr, sold-3yr, sold-5yr
+    Paginates through all available pages (up to 10) until max_results is reached.
+    """
+    base = f"{REDFIN_BASE}/zipcode/{zipcode}/filter/include={sold_within}"
+    seen_urls: set[str] = set()
+    all_results: list[dict] = []
+    max_pages = 10  # hard cap; actual page count read from page 1
 
-    results = _parse_redfin_search_html(html, max_results=max_results)
-    log.info("Redfin search: %d properties returned", len(results))
-    return results
+    # Fetch page 1 to get results AND the real page count
+    html = await _fetch_redfin_page(base)
+    available_pages = min(_parse_max_page(html), max_pages)
+    log.info("Redfin sold search — %d page(s) available for %s %s", available_pages, zipcode, sold_within)
+
+    page_results = _parse_redfin_search_html(html, max_results=max_results)
+    new = [r for r in page_results if r["full_url"] not in seen_urls]
+    for r in new:
+        seen_urls.add(r["full_url"])
+    all_results.extend(new)
+    log.info("Page 1: %d new properties (total: %d)", len(new), len(all_results))
+
+    for page in range(2, available_pages + 1):
+        if len(all_results) >= max_results:
+            break
+        url = f"{base}/page-{page}"
+        log.info("Redfin sold search page %d → %s", page, url)
+
+        html = await _fetch_redfin_page(url)
+        page_results = _parse_redfin_search_html(html, max_results=max_results)
+
+        new = [r for r in page_results if r["full_url"] not in seen_urls]
+        for r in new:
+            seen_urls.add(r["full_url"])
+        all_results.extend(new)
+
+        log.info("Page %d: %d new properties (total: %d)", page, len(new), len(all_results))
+
+        if not new:
+            break
+
+    log.info("Redfin search complete: %d properties across up to %d page(s)", len(all_results), available_pages)
+    return all_results
 
 
 # ─── ZIP extraction helper ────────────────────────────────────────────────────
