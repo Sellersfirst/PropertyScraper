@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -236,6 +237,7 @@ async def _search_stream(req: ComparableSalesRequest):
     # ── 2–4. Page-by-page loop ───────────────────────────────────────────────
     comparables: list[ComparableProperty] = []
     total_candidates_seen: int = 0
+    processed_count: int = 0  # total properties whose history has been checked
 
     async for page_num, page_candidates, available_pages in iter_sold_pages(zip_code, req.sold_within):
         total_candidates_seen += len(page_candidates)
@@ -252,37 +254,42 @@ async def _search_stream(req: ComparableSalesRequest):
             "total_pages": available_pages,
             "candidates": len(page_candidates),
             "passed_filters": len(page_filtered),
-            "qualified_so_far": len(comparables),
+            "qualified_count": len(comparables),
+            "processed_count": processed_count,
         }
 
-        for i, prop in enumerate(page_filtered):
-            if len(comparables) >= req.max_comparables:
-                break
+        # Batch size scales with max_comparables — bigger target = bigger parallel batches
+        batch_size = min(req.max_comparables, 5)
+        offset = 0
+        while offset < len(page_filtered) and len(comparables) < req.max_comparables:
+            batch = page_filtered[offset:offset + batch_size]
+            offset += batch_size
 
-            addr = prop.get("address") or ""
-            yield {
-                "type": "scraping",
-                "address": addr,
-                "index": i + 1,
-                "total": len(page_filtered),
-            }
+            batch_results = await asyncio.gather(*(_fetch_history(p) for p in batch))
 
-            _, history = await _fetch_history(prop)
-            passes, reason = _passes_history_filters(history, addr)
+            for prop, history in batch_results:
+                if len(comparables) >= req.max_comparables:
+                    break
 
-            if not passes:
-                yield {
-                    "type": "skipped",
-                    "address": addr,
-                    "reason": reason,
-                    "qualified_count": len(comparables),
-                }
-                continue
+                processed_count += 1
+                addr = prop.get("address") or ""
+                url = prop.get("full_url") or ""
+                passes, reason = _passes_history_filters(history, addr)
 
-            sale_pair = _extract_sale_pair(history)
-            comparables.append(
-                ComparableProperty(
-                    redfin_url=prop.get("full_url"),
+                if not passes:
+                    yield {
+                        "type": "skipped",
+                        "address": addr,
+                        "redfin_url": url,
+                        "reason": reason,
+                        "processed_count": processed_count,
+                        "qualified_count": len(comparables),
+                    }
+                    continue
+
+                sale_pair = _extract_sale_pair(history)
+                comparable = ComparableProperty(
+                    redfin_url=url or None,
                     address=addr or None,
                     sq_ft=prop.get("sq_ft"),
                     lot_size_sqft=prop.get("lot_size_sqft"),
@@ -300,13 +307,16 @@ async def _search_stream(req: ComparableSalesRequest):
                     spread=sale_pair.get("spread"),
                     sale_history=history,
                 )
-            )
-            yield {
-                "type": "qualified",
-                "address": addr,
-                "qualified_count": len(comparables),
-                "max": req.max_comparables,
-            }
+                comparables.append(comparable)
+                yield {
+                    "type": "qualified",
+                    "address": addr,
+                    "redfin_url": url,
+                    "processed_count": processed_count,
+                    "qualified_count": len(comparables),
+                    "max": req.max_comparables,
+                    "property": comparable.model_dump(),
+                }
 
         if len(comparables) >= req.max_comparables:
             break

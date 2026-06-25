@@ -21,8 +21,7 @@ SCRAPINGBEE_KEY = os.environ["SCRAPINGBEE_API_KEY"]
 REDFIN_BASE = "https://www.redfin.com"
 SCRAPINGBEE_URL = "https://app.scrapingbee.com/api/v1/"
 
-# Limit concurrent ScrapingBee calls to avoid rate-limit 500s from simultaneous requests
-_SB_SEMAPHORE = asyncio.Semaphore(3)
+_SB_SEMAPHORE = asyncio.Semaphore(5)
 
 def _strip_xssi(text: str) -> str:
     # Redfin prefixes JSON responses with `{}&&` as XSSI prevention.
