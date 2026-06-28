@@ -514,7 +514,7 @@ def _parse_sale_history(html: str) -> list[SaleEvent]:
     return events
 
 
-async def scrape_sale_history(redfin_url: str) -> list[SaleEvent]:
+async def scrape_sale_history(redfin_url: str) -> tuple[list[SaleEvent], dict]:
     log.info("Scraping sale history: %s", redfin_url)
     wait_for = (
         "#property-history-transition-node"
@@ -522,6 +522,14 @@ async def scrape_sale_history(redfin_url: str) -> list[SaleEvent]:
         ", .PropertyHistoryEventRow"
     )
     html = await _scrapingbee(redfin_url, wait_for=wait_for, extra_wait_ms=3000)
+    soup = BeautifulSoup(html, "lxml")
     events = _parse_sale_history(html)
     log.info("Sale history: %d event(s) found", len(events))
-    return events
+
+    # Pull lot size + sq_ft from the property page while we have the HTML
+    lot_size_raw = _parse_lot_size(soup)
+    extra = {
+        "lot_size_sqft": lot_size_to_sqft(lot_size_raw),
+        "sq_ft": _parse_sq_ft(soup),
+    }
+    return events, extra

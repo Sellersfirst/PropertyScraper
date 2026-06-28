@@ -180,7 +180,10 @@ async def _search_stream(req: ComparableSalesRequest):
         if not comp_url:
             return prop, []
         try:
-            return prop, await scrape_sale_history(comp_url)
+            events, extra = await scrape_sale_history(comp_url)
+            # Fill in lot_size_sqft / sq_ft if the search card didn't have them
+            merged = {**prop, **{k: v for k, v in extra.items() if prop.get(k) is None and v is not None}}
+            return merged, events
         except Exception as e:
             log.warning("History scrape failed for %s: %s", comp_url, e)
             return prop, []
