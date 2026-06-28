@@ -416,6 +416,32 @@ def _parse_lot_size(soup: BeautifulSoup) -> str | None:
     return None
 
 
+def _parse_public_record(soup: BeautifulSoup) -> dict:
+    """Extract lot_size_sqft, sq_ft, garage, pool from the Public Record table."""
+    result: dict = {"lot_size_sqft": None, "sq_ft": None, "garage": None, "pool": None}
+    for row in soup.select(".table-row"):
+        label_el = row.select_one(".table-label")
+        value_el = row.select_one(".table-value")
+        if not label_el or not value_el:
+            continue
+        label = label_el.get_text(strip=True).lower()
+        value = value_el.get_text(strip=True)
+        if not value or value == "—":
+            continue
+        if "lot size" in label:
+            result["lot_size_sqft"] = lot_size_to_sqft(value)
+        elif label in ("sq. ft.", "sq ft", "sqft"):
+            m = re.search(r"([\d,]+)", value)
+            if m:
+                result["sq_ft"] = int(m.group(1).replace(",", ""))
+        elif label == "garage":
+            result["garage"] = value
+        elif label == "features":
+            if re.search(r"\bpool\b", value, re.I):
+                result["pool"] = True
+    return result
+
+
 def _parse_lat_lng(soup: BeautifulSoup) -> tuple[float | None, float | None]:
     for script in soup.find_all("script"):
         text = script.string or ""
@@ -526,10 +552,6 @@ async def scrape_sale_history(redfin_url: str) -> tuple[list[SaleEvent], dict]:
     events = _parse_sale_history(html)
     log.info("Sale history: %d event(s) found", len(events))
 
-    # Pull lot size + sq_ft from the property page while we have the HTML
-    lot_size_raw = _parse_lot_size(soup)
-    extra = {
-        "lot_size_sqft": lot_size_to_sqft(lot_size_raw),
-        "sq_ft": _parse_sq_ft(soup),
-    }
+    # Pull property details from the Public Record table while we have the HTML
+    extra = _parse_public_record(soup)
     return events, extra
