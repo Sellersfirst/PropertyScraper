@@ -71,6 +71,11 @@ def _extract_sale_pair(history: list[SaleEvent]) -> dict:
         return {}
 
     def _price_for_sold(sold_idx: int) -> Optional[int]:
+        # Try the Sold event's own price first (actual transaction price)
+        own = _parse_price_str(history[sold_idx].price)
+        if own:
+            return own
+        # Fall back to the preceding Listed event price
         for j in range(sold_idx + 1, len(history)):
             if "listed" in history[j].event.lower():
                 return _parse_price_str(history[j].price)
