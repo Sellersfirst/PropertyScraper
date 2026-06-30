@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import time
+from datetime import datetime
 from urllib.parse import quote
 
 import httpx
@@ -540,6 +541,80 @@ def _parse_sale_history(html: str) -> list[SaleEvent]:
     return events
 
 
+def _parse_history_date(s: str) -> datetime | None:
+    for fmt in ("%b %d, %Y", "%B %d, %Y", "%m/%d/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s.strip(), fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _parse_price_int(s: str | None) -> int | None:
+    if not s:
+        return None
+    m = re.search(r"[\d,]+", s.replace("$", ""))
+    return int(m.group().replace(",", "")) if m else None
+
+
+def _deduplicate_history(events: list[SaleEvent]) -> list[SaleEvent]:
+    """Remove duplicate Sold events from different MLS sources reporting the same transaction.
+
+    Two Sold events are considered the same transaction when:
+      - dates are within 5 days of each other
+      - prices differ by less than 3%  (or both have no price)
+
+    Keep the first occurrence (newest-first order = most recently reported source).
+    If one duplicate has a price and the other doesn't, keep the one with the price.
+    """
+    deduped: list[SaleEvent] = []
+    for ev in events:
+        if "sold" not in ev.event.lower():
+            deduped.append(ev)
+            continue
+
+        ev_date = _parse_history_date(ev.date)
+        ev_price = _parse_price_int(ev.price)
+        is_dup = False
+
+        for i, kept in enumerate(deduped):
+            if "sold" not in kept.event.lower():
+                continue
+            kept_date = _parse_history_date(kept.date)
+            kept_price = _parse_price_int(kept.price)
+
+            if not (ev_date and kept_date):
+                continue
+            if abs((ev_date - kept_date).days) > 5:
+                continue
+
+            # Only deduplicate cross-source entries (e.g. FMLS vs GAMLS)
+            if ev.source and kept.source and ev.source == kept.source:
+                continue
+
+            # Dates close — check price
+            if ev_price and kept_price:
+                if abs(ev_price - kept_price) / max(ev_price, kept_price) >= 0.03:
+                    continue  # prices differ too much — different transactions
+            elif ev_price or kept_price:
+                # One has price, other doesn't — same transaction, prefer the one with price
+                if ev_price and not kept_price:
+                    deduped[i] = ev  # swap: incoming has price, kept doesn't
+                is_dup = True
+                break
+
+            is_dup = True
+            break
+
+        if not is_dup:
+            deduped.append(ev)
+
+    removed = len(events) - len(deduped)
+    if removed:
+        log.info("Deduplication removed %d duplicate sale event(s)", removed)
+    return deduped
+
+
 async def scrape_sale_history(redfin_url: str) -> tuple[list[SaleEvent], dict]:
     log.info("Scraping sale history: %s", redfin_url)
     wait_for = (
@@ -549,7 +624,7 @@ async def scrape_sale_history(redfin_url: str) -> tuple[list[SaleEvent], dict]:
     )
     html = await _scrapingbee(redfin_url, wait_for=wait_for, extra_wait_ms=3000)
     soup = BeautifulSoup(html, "lxml")
-    events = _parse_sale_history(html)
+    events = _deduplicate_history(_parse_sale_history(html))
     log.info("Sale history: %d event(s) found", len(events))
 
     # Pull property details from the Public Record table while we have the HTML

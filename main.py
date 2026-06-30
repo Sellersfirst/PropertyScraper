@@ -48,7 +48,7 @@ app = FastAPI(title="Property Comparable Sales", version="3.0.0", lifespan=lifes
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5174",
+        "http://localhost:5173",
         "https://property-finder-eight-tau.vercel.app",
     ],
     allow_methods=["*"],
